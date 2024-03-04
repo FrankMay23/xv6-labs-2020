@@ -100,7 +100,7 @@ runcmd(struct cmd *cmd)
   case PIPE:
     pcmd = (struct pipecmd*)cmd;
     if(pipe(p) < 0)
-      panic("pipe");
+      panic("pipe"); //输出错误
     if(fork1() == 0){
       close(1);
       dup(p[1]);

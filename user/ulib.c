@@ -43,6 +43,7 @@ memset(void *dst, int c, uint n)
   return dst;
 }
 
+//c 在s中的位置
 char*
 strchr(const char *s, char c)
 {
