@@ -50,7 +50,8 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  uint64 cause = r_scause();
+  if(cause == 8){
     // system call
 
     if(p->killed)
@@ -67,8 +68,19 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (cause == 15 || cause == 13) {
+    uint64 va = r_stval();
+    if (va > PGROUNDUP(p->trapframe->sp) - 1 && va < p->sz) {
+      if (lazyalloc(va) == 0) {
+        // printf("cannot lazyalloc\n");
+        p->killed = 1;
+      }
+    } else {
+      // printf("error va\n");
+      p->killed = 1;
+    }
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+    printf("usertrap(): unexpected scause %p pid=%d\n", cause, p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }

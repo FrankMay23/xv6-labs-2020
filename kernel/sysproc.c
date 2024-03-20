@@ -47,8 +47,15 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+  if(n < 0){
+    uint64 newsz;
+    if ((newsz = uvmdealloc(myproc()->pagetable, addr, addr + n)) < 0)
+      return -1;
+    myproc()->sz = newsz;
+  } else
+    myproc()->sz += n;
+  // if(growproc(n) < 0)
+  //   return -1;
   return addr;
 }
 
