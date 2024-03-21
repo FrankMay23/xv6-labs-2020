@@ -5,7 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "spinlock.h"
+#include "proc.h"
 /*
  * the kernel's page table.
  */
@@ -305,34 +306,106 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+// int
+// uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+// {
+//   pte_t *pte;
+//   uint64 pa, i;
+//   uint flags;
+//   char *mem;
+
+//   for(i = 0; i < sz; i += PGSIZE){
+//     if((pte = walk(old, i, 0)) == 0)
+//       panic("uvmcopy: pte should exist");
+//     if((*pte & PTE_V) == 0)
+//       panic("uvmcopy: page not present");
+//     pa = PTE2PA(*pte);
+//     flags = PTE_FLAGS(*pte);
+//     if((mem = kalloc()) == 0)
+//       goto err;
+//     memmove(mem, (char*)pa, PGSIZE);
+//     if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+//       kfree(mem);
+//       goto err;
+//     }
+//   }
+//   return 0;
+
+//  err:
+//   uvmunmap(new, 0, i / PGSIZE, 1);
+//   return -1;
+// }
+
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    if (flags & PTE_W) {
+      flags = (flags | PTE_F) & ~PTE_W;
+      *pte = PA2PTE(pa) | flags;
     }
+    
+
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      uvmunmap(new, 0, i/PGSIZE, 1);
+      return -1;
+    }
+    kaddrefcnt((char*) pa);
   }
   return 0;
 
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
+}
+
+void
+cow() {
+  struct proc* p = myproc();
+  uint64 va = r_stval(), pa;
+  va = PGROUNDDOWN(va);
+  if (va >= p->sz) {
+    printf("cow: not va\n");
+    p->killed = 1;
+    return;
+  }
+  pte_t *pte;
+  uint flags;
+  char *mem;
+
+  if((pte = walk(p->pagetable, va, 0)) == 0)
+    panic("cow: pte should exist");
+  if((*pte & PTE_V) == 0)
+    panic("cow: page not present");
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  if (flags & PTE_F) {
+    flags = (flags | PTE_W) & (~PTE_F);
+    if (krefcnt((char*) pa) == 1) {
+      *pte = PA2PTE(pa) | flags;
+    } else {
+      if((mem = kalloc()) == 0){
+        printf("cow:no men\n");
+        p->killed = 1;
+        return;
+      }
+      memmove(mem, (char*)pa, PGSIZE);
+      *pte = PA2PTE(mem) | flags;
+      kfree((char*) pa);
+    }
+  } else {
+    printf("cow: not F\n");
+    p->killed = 1;
+  }
 }
 
 // mark a PTE invalid for user access.
@@ -351,6 +424,28 @@ uvmclear(pagetable_t pagetable, uint64 va)
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
+// int
+// copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
+// {
+//   uint64 n, va0, pa0;
+
+//   while(len > 0){
+//     va0 = PGROUNDDOWN(dstva);
+//     pa0 = walkaddr(pagetable, va0);
+//     if(pa0 == 0)
+//       return -1;
+//     n = PGSIZE - (dstva - va0);
+//     if(n > len)
+//       n = len;
+//     memmove((void *)(pa0 + (dstva - va0)), src, n);
+
+//     len -= n;
+//     src += n;
+//     dstva = va0 + PGSIZE;
+//   }
+//   return 0;
+// }
+
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
@@ -358,9 +453,41 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+    // pa0 = walkaddr(pagetable, va0);
+    pte_t *pte;
+    uint64 flags;
+
+    if(va0 >= MAXVA) {
+      printf("copyout: not va\n");
+      return -1;
+    }
+
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+
+    pa0 = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
     if(pa0 == 0)
       return -1;
+    if (flags & PTE_F) {
+      char* mem;
+      flags = (flags | PTE_W) & (~PTE_F);
+      if (krefcnt((char*) pa0) == 1) {
+        *pte = PA2PTE(pa0) | flags;
+      } else {
+        if((mem = kalloc()) == 0){
+          printf("cow:no men\n");
+          // p->killed = 1;
+          return -1;
+        }
+        memmove(mem, (char*)pa0, PGSIZE);
+        *pte = PA2PTE(mem) | flags;
+        kfree((char*) pa0);
+        pa0 = (uint64) mem;
+      }
+      
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

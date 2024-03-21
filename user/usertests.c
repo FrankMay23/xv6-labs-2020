@@ -82,6 +82,7 @@ copyout(char *s)
       exit(1);
     }
     int n = read(fd, (void*)addr, 8192);
+    // printf("copyout %d\n", n);
     if(n > 0){
       printf("read(fd, %p, 8192) returned %d, not -1 or 0\n", addr, n);
       exit(1);

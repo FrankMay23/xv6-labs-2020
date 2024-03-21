@@ -46,11 +46,13 @@ usertrap(void)
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
+
+  uint64 cause = r_scause();
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  if(cause == 8){
     // system call
 
     if(p->killed)
@@ -67,8 +69,13 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+  } 
+  else if (cause == 15 || cause == 13) {
+    cow();
+    
+  } 
+  else {
+    printf("usertrap(): unexpected scause %p pid=%d\n", cause, p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
